@@ -65,9 +65,10 @@ class PersonDetectionNode:
         self.locked_person = None  # Stores locked person info
         self.lock_enabled = False  # Lock state flag
         self.auto_lock = True  # Auto-lock first person
-        self.lock_distance_threshold = 0.5  # meters
-        self.lock_position_threshold = 150  # pixels
-        self.lock_timeout_frames = 90  # 3 seconds at 30fps
+        self.lock_distance_threshold = 0.8  # meters (increased tolerance)
+        self.lock_position_threshold = 200  # pixels (increased tolerance)
+        self.lock_timeout_frames = 120  # 4 seconds at 30fps (more forgiving)
+        self.lock_match_threshold = 0.5  # Minimum score to match locked person
         
         # Load YOLO-Pose model for gesture recognition
         pose_model_path = os.path.join(os.path.dirname(__file__), '..', 'models', 'yolov8n-pose.pt')
@@ -101,8 +102,8 @@ class PersonDetectionNode:
         self.obstacle_detection_enabled = False  # Disabled for now
         
         # Gesture detection parameters (Task D)
-        self.gesture_threshold = 100  # pixels - hand above shoulder
-        self.gesture_confirmation_frames = 3  # out of 6 frames (faster response)
+        self.gesture_threshold = 80  # pixels - hand above shoulder (lower for easier detection)
+        self.gesture_confirmation_frames = 2  # out of 6 frames (faster response)
         
         rospy.loginfo("Person Detection Node initialized successfully!")
         rospy.loginfo("Waiting for camera data...")
@@ -113,18 +114,16 @@ class PersonDetectionNode:
     def rgb_callback(self, msg):
         """Callback for RGB image from camera"""
         try:
-            image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
-            # Mirror the image horizontally
-            self.rgb_image = cv2.flip(image, 1)
+            # No mirroring - use normal camera view
+            self.rgb_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
         except Exception as e:
             rospy.logerr(f"Error converting RGB image: {e}")
     
     def depth_callback(self, msg):
         """Callback for depth image from camera"""
         try:
-            depth = self.bridge.imgmsg_to_cv2(msg, "16UC1")
-            # Mirror the depth image to match RGB
-            self.depth_image = cv2.flip(depth, 1)
+            # No mirroring - use normal camera view
+            self.depth_image = self.bridge.imgmsg_to_cv2(msg, "16UC1")
         except Exception as e:
             rospy.logerr(f"Error converting depth image: {e}")
 
@@ -184,7 +183,7 @@ class PersonDetectionNode:
         best_score = 0
         
         locked_center = self.locked_person['center']
-        locked_dist = self.locked_person['distance']
+        locked_dist = self.locked_person.get('distance', 2.0)
         
         for det in detections:
             if 'distance' not in det or det['distance'] is None:
@@ -199,12 +198,19 @@ class PersonDetectionNode:
                        (det['center'][1] - locked_center[1])**2)**0.5
             pos_score = max(0, 1 - (pos_diff / self.lock_position_threshold))
             
-            # Combined score
-            total_score = (dist_score * 0.6) + (pos_score * 0.4)
+            # Combined score - prioritize position over distance for stability
+            total_score = (dist_score * 0.4) + (pos_score * 0.6)
             
-            if total_score > best_score and total_score > 0.3:
+            # Use stricter threshold to avoid switching persons
+            if total_score > best_score and total_score > self.lock_match_threshold:
                 best_score = total_score
                 best_match = det
+        
+        # Log matching info
+        if best_match:
+            rospy.logdebug_throttle(5, f"Match score: {best_score:.2f}")
+        else:
+            rospy.logdebug_throttle(5, f"No match found (best score: {best_score:.2f})")
         
         return best_match
     
@@ -254,13 +260,20 @@ class PersonDetectionNode:
         if person_center_x is None or self.rgb_image is None:
             return 0.0
         
+        if self.rgb_image is None:
+            return 0.0
+            
         image_center = self.rgb_image.shape[1] / 2
         error = person_center_x - image_center
         
         # Add deadband to prevent constant small adjustments
-        deadband = 40  # pixels (increased for stability)
+        deadband = 50  # pixels (increased for more stability)
         if abs(error) < deadband:
-            return 0.0
+            # Gradually slow down to zero
+            self.last_angular_speed *= 0.7
+            if abs(self.last_angular_speed) < 0.01:
+                self.last_angular_speed = 0.0
+            return self.last_angular_speed
         
         # Proportional control
         angular = -self.Kp_angular * error
@@ -367,8 +380,9 @@ class PersonDetectionNode:
         # 7: left elbow, 8: right elbow
         # 9: left wrist, 10: right wrist
         
-        # NOTE: Image is mirrored, so left/right are swapped!
-        # When user raises their RIGHT hand, it appears as LEFT in mirrored image
+        # Normal camera view (no mirroring)
+        # Right hand in image = user's right hand
+        # Left hand in image = user's left hand
         
         try:
             left_shoulder = keypoints[5]
@@ -380,14 +394,14 @@ class PersonDetectionNode:
             if np.all(left_shoulder == 0) or np.all(right_shoulder == 0):
                 return 'NONE'
             
-            # User's RIGHT hand raised (appears as LEFT in mirrored image) = START
-            if np.all(left_wrist != 0):
-                if left_wrist[1] < left_shoulder[1] - self.gesture_threshold:
-                    return 'START'
-            
-            # User's LEFT hand raised (appears as RIGHT in mirrored image) = STOP
+            # Right hand raised = START following
             if np.all(right_wrist != 0):
                 if right_wrist[1] < right_shoulder[1] - self.gesture_threshold:
+                    return 'START'
+            
+            # Left hand raised = STOP following
+            if np.all(left_wrist != 0):
+                if left_wrist[1] < left_shoulder[1] - self.gesture_threshold:
                     return 'STOP'
             
             return 'NONE'
@@ -513,11 +527,11 @@ class PersonDetectionNode:
         # Draw keypoints
         for i, kp in enumerate(keypoints):
             if np.all(kp != 0):
-                # Highlight raised hands (accounting for mirrored image)
-                if gesture == 'START' and i == 9:  # Left wrist in mirrored = user's right hand
+                # Highlight raised hands (normal view - no mirroring)
+                if gesture == 'START' and i == 10:  # Right wrist = START
                     color = (0, 255, 0)  # Green
                     radius = 8
-                elif gesture == 'STOP' and i == 10:  # Right wrist in mirrored = user's left hand
+                elif gesture == 'STOP' and i == 9:  # Left wrist = STOP
                     color = (0, 0, 255)  # Red
                     radius = 8
                 else:
