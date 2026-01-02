@@ -36,46 +36,33 @@ source devel/setup.bash
 
 ## Usage
 
-### Running the System
+### Running the System - Terminal Workflow
 
-The camera is now opened directly from the Python code. You have **two options** to run the system:
+The system requires **4 separate terminals**. Run commands in this order:
 
-#### Option 1: Using the Standalone Script (Recommended)
-
+#### Terminal 1: Connect Kobuki Robot
 ```bash
-cd /home/foe-usjp/turtlebot_ws/src/turtlebot_person_tracking
-./run_detection.sh
+roslaunch turtlebot_bringup minimal.launch
 ```
 
-This script will:
-- Start roscore automatically if not running
-- Run the person detection node
-- Open the camera from Python code
-- Clean up on exit
-
-#### Option 2: Manual Execution
-
-**Step 1: Start ROS Core**
+#### Terminal 2: Connect RealSense Camera
 ```bash
-roscore
+source /opt/ros/noetic/setup.bash
+source /home/foe-usjp/turtlebot_ws/devel/setup.bash
+roslaunch realsense2_camera rs_camera.launch align_depth:=true
 ```
 
-**Step 2: Run Person Detection (in a new terminal)**
+#### Terminal 3: Open Image Viewer (Optional)
+```bash
+source /opt/ros/noetic/setup.bash
+rosrun image_view image_view image:=/person_detection/image
+```
+
+#### Terminal 4: Run Person Detection
 ```bash
 source /opt/ros/noetic/setup.bash
 source /home/foe-usjp/turtlebot_ws/devel/setup.bash
 rosrun turtlebot_person_tracking main.py
-```
-
-The camera will open automatically when the script starts.
-
-#### Option 3: Using Launch File (Opens camera via ROS)
-
-If you prefer to use the ROS camera driver:
-```bash
-source /opt/ros/noetic/setup.bash
-source /home/foe-usjp/turtlebot_ws/devel/setup.bash
-roslaunch turtlebot_person_tracking person_tracking.launch
 ```
 
 ### What You'll See
@@ -88,42 +75,32 @@ roslaunch turtlebot_person_tracking person_tracking.launch
 
 ### ROS Topics
 
-**Published Topics:**
-- `/person_detection/image` - Annotated video with detection boxes
-- `/cmd_vel` - Robot velocity commands (for future navigation)
+**Subscribed Topics:**
+- `/camera/color/image_raw` - RGB camera feed (from Terminal 2)
+- `/camera/aligned_depth_to_color/image_raw` - Aligned depth data (from Terminal 2)
 
-**Note:** When running with Option 1 or 2, the camera is accessed directly via pyrealsense2, so ROS camera topics are not used. When using Option 3 (launch file), the following topics are also available:
-- `/camera/color/image_raw` - RGB camera feed
-- `/camera/aligned_depth_to_color/image_raw` - Aligned depth data
+**Published Topics:**
+- `/person_detection/image` - Annotated video with detection boxes (viewed in Terminal 3)
 
 ### Viewing Detection Results
 
-To visualize the detection results:
-
-```bash
-# In a new terminal
-rosrun image_view image_view image:=/person_detection/image
-```
-
-Or uncomment lines 187-188 in `scripts/main.py` to enable OpenCV window display.
+The detection results are shown in **Terminal 3** (image viewer window) with:
+- Green bounding boxes around detected persons
+- Distance measurements in meters
+- "TRACKING TARGET" label on the closest person
 
 ## Configuration
 
-### Custom Model Path
-
-To use a different YOLO model, edit the launch file:
-
-```xml
-<node name="person_detection_node" pkg="turtlebot_person_tracking" type="main.py" output="screen">
-  <param name="model_path" value="/path/to/your/model.pt" />
-</node>
-```
-
 ### Camera Settings
 
-Camera resolution and frame rate can be adjusted in `launch/person_tracking.launch`:
-- Default: 640x480 @ 15fps
-- Modify `depth_width`, `depth_height`, `color_width`, `color_height`, `depth_fps`, `color_fps`
+Camera resolution and frame rate can be adjusted when launching the camera (Terminal 2):
+```bash
+roslaunch realsense2_camera rs_camera.launch \
+  align_depth:=true \
+  depth_width:=640 depth_height:=480 \
+  color_width:=640 color_height:=480 \
+  depth_fps:=15 color_fps:=15
+```
 
 ## Troubleshooting
 
@@ -143,7 +120,7 @@ realsense-viewer
 - Check confidence threshold (default: 0.5)
 
 ### Performance Issues
-- Reduce camera resolution in launch file
+- Reduce camera resolution in Terminal 2 camera launch command
 - Increase frame skip in `main.py` (currently processes every 3rd frame)
 - Use GPU if available (automatically detected)
 

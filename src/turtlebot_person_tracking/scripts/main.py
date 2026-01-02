@@ -4,7 +4,6 @@ import rospy
 import cv2
 import numpy as np
 import torch
-import pyrealsense2 as rs
 from sensor_msgs.msg import Image
 from geometry_msgs.msg import Twist
 from cv_bridge import CvBridge
@@ -25,28 +24,27 @@ class PersonDetectionNode:
         self.model = YOLO(model_path)
         rospy.loginfo("YOLOv8 model loaded successfully!")
         
-        # Initialize RealSense camera
-        rospy.loginfo("Initializing RealSense camera...")
-        self.pipeline = rs.pipeline()
-        self.config = rs.config()
-        
-        # Configure streams
-        self.config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 15)
-        self.config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 15)
-        
-        # Start pipeline
-        self.profile = self.pipeline.start(self.config)
-        
-        # Create align object to align depth to color
-        align_to = rs.stream.color
-        self.align = rs.align(align_to)
-        
-        rospy.loginfo("RealSense camera initialized successfully!")
-        
         self.rgb_image = None
         self.depth_image = None
         self.latest_detection = None
         self.frame_count = 0
+        
+        # Subscribe to camera topics
+        self.rgb_sub = rospy.Subscriber(
+            '/camera/color/image_raw', 
+            Image, 
+            self.rgb_callback,
+            queue_size=1,
+            buff_size=2**24
+        )
+        
+        self.depth_sub = rospy.Subscriber(
+            '/camera/aligned_depth_to_color/image_raw', 
+            Image, 
+            self.depth_callback,
+            queue_size=1,
+            buff_size=2**24
+        )
         
         # Publisher for robot control (future use)
         self.cmd_vel_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
@@ -62,33 +60,22 @@ class PersonDetectionNode:
         self.person_class_id = 0
         
         rospy.loginfo("Person Detection Node initialized successfully!")
-        rospy.loginfo("Starting person detection...")
+        rospy.loginfo("Waiting for camera data...")
 
         
-    def capture_frames(self):
-        """Capture frames directly from RealSense camera"""
+    def rgb_callback(self, msg):
+        """Callback for RGB image from camera"""
         try:
-            # Wait for frames
-            frames = self.pipeline.wait_for_frames()
-            
-            # Align depth to color
-            aligned_frames = self.align.process(frames)
-            
-            # Get aligned frames
-            depth_frame = aligned_frames.get_depth_frame()
-            color_frame = aligned_frames.get_color_frame()
-            
-            if not depth_frame or not color_frame:
-                return False
-            
-            # Convert to numpy arrays
-            self.depth_image = np.asanyarray(depth_frame.get_data())
-            self.rgb_image = np.asanyarray(color_frame.get_data())
-            
-            return True
+            self.rgb_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
         except Exception as e:
-            rospy.logerr(f"Error capturing frames: {e}")
-            return False
+            rospy.logerr(f"Error converting RGB image: {e}")
+    
+    def depth_callback(self, msg):
+        """Callback for depth image from camera"""
+        try:
+            self.depth_image = self.bridge.imgmsg_to_cv2(msg, "16UC1")
+        except Exception as e:
+            rospy.logerr(f"Error converting depth image: {e}")
 
     
     def detect_person(self, image):
@@ -185,10 +172,6 @@ class PersonDetectionNode:
     
     def process_frame(self):
         """Process a single frame for person detection"""
-        # Capture frames from camera
-        if not self.capture_frames():
-            return
-        
         if self.rgb_image is None:
             return
 
@@ -213,10 +196,6 @@ class PersonDetectionNode:
             closest_person
         )
         
-        # Display image (optional - uncomment to show window)
-        # cv2.imshow("Person Detection", annotated_image)
-        # cv2.waitKey(1)
-        
         # Publish annotated image
         try:
             detection_msg = self.bridge.cv2_to_imgmsg(annotated_image, "bgr8")
@@ -231,20 +210,15 @@ class PersonDetectionNode:
     
     def run(self):
         """Main loop for person detection"""
-        rate = rospy.Rate(15)  # 15 Hz to match camera frame rate
+        rate = rospy.Rate(5)  # 5 Hz
         
         rospy.loginfo("Starting person detection loop...")
         
-        try:
-            while not rospy.is_shutdown():
-                self.process_frame()
-                rate.sleep()
-        finally:
-            # Clean up
-            rospy.loginfo("Stopping camera...")
-            self.pipeline.stop()
-            cv2.destroyAllWindows()
-            rospy.loginfo("Camera stopped.")
+        while not rospy.is_shutdown():
+            self.process_frame()
+            rate.sleep()
+        
+        cv2.destroyAllWindows()
 
 def main():
     try:
