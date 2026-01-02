@@ -1,0 +1,2 @@
+set(realsense2_camera_MESSAGE_FILES "/home/foe-usjp/turtlebot_ws/src/realsense-ros/realsense2_camera/msg/IMUInfo.msg;/home/foe-usjp/turtlebot_ws/src/realsense-ros/realsense2_camera/msg/Extrinsics.msg;/home/foe-usjp/turtlebot_ws/src/realsense-ros/realsense2_camera/msg/Metadata.msg")
+set(realsense2_camera_SERVICE_FILES "/home/foe-usjp/turtlebot_ws/src/realsense-ros/realsense2_camera/srv/DeviceInfo.srv")

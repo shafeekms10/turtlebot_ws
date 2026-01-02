@@ -1,0 +1,8 @@
+prefix=/home/foe-usjp/turtlebot_ws/devel
+
+Name: turtlebot_person_tracking
+Description: Description of turtlebot_person_tracking
+Version: 1.0.0
+Cflags: 
+Libs: -L${prefix}/lib 
+Requires: 

@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>person_detection</name>
+  <version>0.1.0</version>
+  <description>Person detection and tracking using YOLOv5 and Intel RealSense D435</description>
+
+  <maintainer email="user@todo.todo">Your Name</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>rospy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>cv_bridge</depend>
+  <depend>std_msgs</depend>
+  <depend>realsense2_camera</depend>
+
+  <export>
+  </export>
+</package>
