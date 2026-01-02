@@ -20,22 +20,15 @@ roslaunch realsense2_camera rs_camera.launch align_depth:=true
 
 ---
 
-### Terminal 3: Open Image Viewer (Optional)
-```bash
-source /opt/ros/noetic/setup.bash
-rosrun image_view image_view image:=/person_detection/image
-```
-**What this does:** Opens a window showing the camera feed with person detection boxes and distances.
-
----
-
-### Terminal 4: Run Person Detection Script
+### Terminal 3: Run Person Detection Script
 ```bash
 source /opt/ros/noetic/setup.bash
 source /home/foe-usjp/turtlebot_ws/devel/setup.bash
 rosrun turtlebot_person_tracking main.py
 ```
-**What this does:** Runs the Python script that detects and tracks persons using the camera data.
+**What this does:** 
+- Runs the Python script that detects and tracks persons using the camera data
+- **Opens an OpenCV window** showing the camera view with detection boxes and distances
 
 ---
 
@@ -45,14 +38,13 @@ rosrun turtlebot_person_tracking main.py
 |----------|---------|---------|
 | 1 | `roslaunch turtlebot_bringup minimal.launch` | Connect Kobuki |
 | 2 | `roslaunch realsense2_camera rs_camera.launch align_depth:=true` | Connect Camera |
-| 3 | `rosrun image_view image_view image:=/person_detection/image` | View Detections |
-| 4 | `rosrun turtlebot_person_tracking main.py` | Run Detection Script |
+| 3 | `rosrun turtlebot_person_tracking main.py` | Run Detection + Show Window |
 
 ---
 
 ## Expected Output
 
-**Terminal 4 (Detection Script):**
+**Terminal 3 (Detection Script):**
 ```
 [INFO] Loading YOLOv8 model from: .../yolov8n.pt
 [INFO] YOLOv8 model loaded successfully!
@@ -63,17 +55,17 @@ rosrun turtlebot_person_tracking main.py
 [INFO] Tracking person at distance: 1.45m
 ```
 
-**Terminal 3 (Image Viewer):**
-- Window showing camera feed
+**OpenCV Window (Opens automatically from Python):**
+- Window titled "Person Detection & Tracking"
+- Live camera feed
 - Green boxes around detected persons
 - Distance labels on each person
+- "TRACKING TARGET" label on closest person
 
 ---
 
 ## Stopping the System
 
-Press `Ctrl+C` in each terminal in reverse order:
-1. Terminal 4 (Detection script)
-2. Terminal 3 (Image viewer)
-3. Terminal 2 (Camera)
-4. Terminal 1 (Kobuki)
+Press `Ctrl+C` in Terminal 3 first (this will close the OpenCV window), then:
+1. Terminal 2 (Camera)
+2. Terminal 1 (Kobuki)

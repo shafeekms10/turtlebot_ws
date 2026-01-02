@@ -38,7 +38,7 @@ source devel/setup.bash
 
 ### Running the System - Terminal Workflow
 
-The system requires **4 separate terminals**. Run commands in this order:
+The system requires **3 terminals**. Run commands in this order:
 
 #### Terminal 1: Connect Kobuki Robot
 ```bash
@@ -52,18 +52,24 @@ source /home/foe-usjp/turtlebot_ws/devel/setup.bash
 roslaunch realsense2_camera rs_camera.launch align_depth:=true
 ```
 
-#### Terminal 3: Open Image Viewer (Optional)
-```bash
-source /opt/ros/noetic/setup.bash
-rosrun image_view image_view image:=/person_detection/image
-```
-
-#### Terminal 4: Run Person Detection
+#### Terminal 3: Run Person Detection
 ```bash
 source /opt/ros/noetic/setup.bash
 source /home/foe-usjp/turtlebot_ws/devel/setup.bash
 rosrun turtlebot_person_tracking main.py
 ```
+
+**Note:** An OpenCV window will automatically open showing the camera view with detection boxes and tracking details.
+
+### Making Code Changes During Development
+
+If you change the Python code (`main.py`), you **only need to restart Terminal 3**:
+1. Press `Ctrl+C` in Terminal 3 to stop the script
+2. Run `rosrun turtlebot_person_tracking main.py` again
+
+**Keep Terminal 1 (robot) and Terminal 2 (camera) running** - no need to restart them!
+
+See [DEVELOPMENT.md](file:///home/foe-usjp/turtlebot_ws/src/turtlebot_person_tracking/DEVELOPMENT.md) for detailed development workflow.
 
 ### What You'll See
 
@@ -84,10 +90,14 @@ rosrun turtlebot_person_tracking main.py
 
 ### Viewing Detection Results
 
-The detection results are shown in **Terminal 3** (image viewer window) with:
+An **OpenCV window** automatically opens when you run the detection script (Terminal 3), showing:
+- Window title: "Person Detection & Tracking"
+- Live camera feed with annotations
 - Green bounding boxes around detected persons
 - Distance measurements in meters
 - "TRACKING TARGET" label on the closest person
+
+The window will close automatically when you stop the script with `Ctrl+C`.
 
 ## Configuration
 
