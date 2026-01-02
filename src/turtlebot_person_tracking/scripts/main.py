@@ -91,8 +91,10 @@ class PersonDetectionNode:
         self.last_distance_error = 0.0
         
         # Centering control parameters (Task C)
-        self.Kp_angular = 0.005  # rad/s per pixel (increased for better centering)
-        self.max_angular_speed = 0.6  # rad/s
+        self.Kp_angular = 0.004  # rad/s per pixel (smooth turning)
+        self.max_angular_speed = 0.4  # rad/s (reduced for smoother turns)
+        self.angular_acceleration_limit = 0.15  # rad/s² (smooth acceleration)
+        self.last_angular_speed = 0.0  # For smooth transitions
         
         # Obstacle detection parameters
         self.obstacle_stop_distance = 0.8  # meters
@@ -129,28 +131,33 @@ class PersonDetectionNode:
     
     def detect_person(self, image):
         """Detect persons in the image using YOLOv8"""
-        results = self.model(
-            image, 
-            imgsz=416, 
-            device=self.device,
-            half=(self.device == "cuda"),
-            classes=[0],  # Only detect persons (class 0)
-            conf=0.5,
-            verbose=False
-        )
-        
-        detections = []
-        for result in results:
-            boxes = result.boxes
-            for box in boxes:
-                x1, y1, x2, y2 = map(int, box.xyxy[0])
-                detections.append({
-                    'bbox': [x1, y1, x2, y2],
-                    'confidence': float(box.conf[0]),
-                    'center': ((x1 + x2) // 2, (y1 + y2) // 2)
-                })
-        
-        return detections
+        try:
+            results = self.model(
+                image, 
+                imgsz=320,  # Match the resize size in process_frame
+                device=self.device,
+                half=(self.device == "cuda"),
+                classes=[0],  # Only detect persons (class 0)
+                conf=0.45,  # Slightly lower for better detection
+                verbose=False
+            )
+            
+            detections = []
+            for result in results:
+                boxes = result.boxes
+                if boxes is not None and len(boxes) > 0:
+                    for box in boxes:
+                        x1, y1, x2, y2 = map(int, box.xyxy[0])
+                        detections.append({
+                            'bbox': [x1, y1, x2, y2],
+                            'confidence': float(box.conf[0]),
+                            'center': ((x1 + x2) // 2, (y1 + y2) // 2)
+                        })
+            
+            return detections
+        except Exception as e:
+            rospy.logerr(f"Error in detect_person: {e}")
+            return []
     
     def get_distance(self, center_x, center_y):
         """Get distance to object at given pixel coordinates using depth image"""
@@ -251,15 +258,24 @@ class PersonDetectionNode:
         error = person_center_x - image_center
         
         # Add deadband to prevent constant small adjustments
-        deadband = 30  # pixels
+        deadband = 40  # pixels (increased for stability)
         if abs(error) < deadband:
             return 0.0
         
         # Proportional control
         angular = -self.Kp_angular * error
         
+        # Smooth acceleration (limit rate of change)
+        angular_change = angular - self.last_angular_speed
+        max_change = self.angular_acceleration_limit * 0.1  # Assuming 10Hz update
+        if abs(angular_change) > max_change:
+            angular = self.last_angular_speed + max_change * (1 if angular_change > 0 else -1)
+        
         # Apply limits
         angular = max(-self.max_angular_speed, min(self.max_angular_speed, angular))
+        
+        # Store for next iteration
+        self.last_angular_speed = angular
         
         return angular
     
@@ -297,18 +313,37 @@ class PersonDetectionNode:
         try:
             # Run pose detection on the person's bounding box
             x1, y1, x2, y2 = bbox
+            
+            # Validate and clip bbox to image bounds
+            h, w = image.shape[:2]
+            x1 = max(0, min(x1, w-1))
+            y1 = max(0, min(y1, h-1))
+            x2 = max(x1+1, min(x2, w))
+            y2 = max(y1+1, min(y2, h))
+            
             person_crop = image[y1:y2, x1:x2]
             
-            if person_crop.size == 0:
+            if person_crop.size == 0 or person_crop.shape[0] < 20 or person_crop.shape[1] < 20:
+                rospy.logdebug_throttle(10, "Person crop too small for pose detection")
                 return None, 'NONE'
             
-            # Detect pose
-            results = self.pose_model(person_crop, verbose=False)
+            # Detect pose with lower confidence for better detection
+            results = self.pose_model(person_crop, verbose=False, conf=0.25)
             
-            if len(results) == 0 or results[0].keypoints is None:
+            if len(results) == 0:
+                rospy.logdebug_throttle(10, "No pose results")
+                return None, 'NONE'
+                
+            if results[0].keypoints is None or len(results[0].keypoints) == 0:
+                rospy.logdebug_throttle(10, "No keypoints in results")
                 return None, 'NONE'
             
-            keypoints = results[0].keypoints.xy[0].cpu().numpy()  # Get first person's keypoints
+            keypoints = results[0].keypoints.xy[0].cpu().numpy()
+            
+            # Check if we got enough keypoints
+            if len(keypoints) < 11:
+                rospy.logdebug_throttle(10, f"Not enough keypoints: {len(keypoints)}")
+                return None, 'NONE'
             
             # Adjust keypoints to original image coordinates
             keypoints[:, 0] += x1
@@ -317,10 +352,12 @@ class PersonDetectionNode:
             # Detect gesture
             gesture = self.recognize_gesture(keypoints)
             
+            rospy.loginfo_throttle(10, f"✓ Pose detected! Gesture: {gesture}")
+            
             return keypoints, gesture
             
         except Exception as e:
-            rospy.logwarn_throttle(5, f"Pose detection error: {e}")
+            rospy.logerr_throttle(10, f"Pose detection error: {e}")
             return None, 'NONE'
     
     def recognize_gesture(self, keypoints):
@@ -538,26 +575,31 @@ class PersonDetectionNode:
             
             # Person locking logic (Task A)
             if self.locked_person is None:
+                rospy.loginfo_throttle(5, f"[LOCK] Searching... Detections:{len(detections)} AutoLock:{self.auto_lock}")
                 if self.auto_lock and detections:
                     valid_detections = [d for d in detections if 'distance' in d]
+                    rospy.loginfo_throttle(3, f"[LOCK] Valid detections with distance: {len(valid_detections)}")
                     if valid_detections:
                         self.locked_person = min(valid_detections, key=lambda x: x['distance'])
                         self.locked_person['last_seen'] = self.frame_count
                         self.lock_enabled = True
-                        rospy.loginfo(f"Auto-locked on person at {self.locked_person['distance']:.2f}m")
+                        rospy.loginfo(f"✓✓✓ LOCKED on person at {self.locked_person['distance']:.2f}m ✓✓✓")
             else:
                 matched_person = self.match_person_to_locked(detections)
                 
                 if matched_person:
                     self.locked_person = matched_person
                     self.locked_person['last_seen'] = self.frame_count
+                    rospy.loginfo_throttle(10, f"[LOCK] Tracking at {self.locked_person['distance']:.2f}m")
                 else:
                     frames_since_seen = self.frame_count - self.locked_person.get('last_seen', 0)
                     if frames_since_seen > self.lock_timeout_frames:
-                        rospy.logwarn("Locked person lost - timeout exceeded")
+                        rospy.logwarn("✗✗✗ LOCK LOST - timeout ✗✗✗")
                         self.locked_person = None
                         self.lock_enabled = False
                         self.stop_robot()
+                    else:
+                        rospy.logwarn_throttle(3, f"[LOCK] Searching... ({frames_since_seen}/{self.lock_timeout_frames})")
             
             # Gesture detection on locked person (Task D)
             if self.locked_person is not None:
