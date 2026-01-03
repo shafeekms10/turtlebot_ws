@@ -98,12 +98,22 @@ class PersonDetectionNode:
         self.last_angular_speed = 0.0  # For smooth transitions
         
         # Obstacle detection parameters
-        self.obstacle_stop_distance = 0.8  # meters
-        self.obstacle_detection_enabled = False  # Disabled for now
+        self.obstacle_stop_distance = 0.5  # meters (50cm as requested)
+        self.obstacle_detection_enabled = True  # ENABLED for obstacle avoidance
         
         # Gesture detection parameters (Task D)
         self.gesture_threshold = 80  # pixels - hand above shoulder (lower for easier detection)
         self.gesture_confirmation_frames = 2  # out of 6 frames (faster response)
+        
+        # Smooth acceleration/deceleration parameters
+        self.acceleration_rate = 0.04  # m/s per cycle (smooth start)
+        self.deceleration_rate = 0.05  # m/s per cycle (smooth stop)
+        self.is_accelerating = False
+        self.is_decelerating = False
+        self.target_speed = 0.0
+        
+        # Obstacle state
+        self.obstacle_paused = False  # True when paused due to obstacle
         
         rospy.loginfo("Person Detection Node initialized successfully!")
         rospy.loginfo("Waiting for camera data...")
@@ -417,25 +427,121 @@ class PersonDetectionNode:
         # Count occurrences in buffer
         gesture_counts = Counter(self.gesture_buffer)
         
-        # Confirm gesture if detected in 4+ of last 6 frames
+        # Confirm gesture if detected in 2+ of last 6 frames
         if gesture_counts.get('START', 0) >= self.gesture_confirmation_frames:
             if self.following_state != 'FOLLOWING':
                 self.following_state = 'FOLLOWING'
-                rospy.loginfo("Gesture detected: START FOLLOWING")
+                self.is_accelerating = True  # Initiate smooth acceleration
+                self.obstacle_paused = False  # Clear any obstacle pause
+                rospy.loginfo("✓ Gesture: START FOLLOWING (smooth acceleration)")
         elif gesture_counts.get('STOP', 0) >= self.gesture_confirmation_frames:
             if self.following_state != 'IDLE':
                 self.following_state = 'IDLE'
-                self.stop_robot()
-                rospy.loginfo("Gesture detected: STOP FOLLOWING")
+                self.obstacle_paused = False  # Clear obstacle pause
+                self.stop_robot(smooth=True)  # Smooth deceleration
+                rospy.loginfo("✓ Gesture: STOP FOLLOWING (smooth stop)")
     
-    def stop_robot(self):
-        """Stop the robot immediately"""
+    
+    def stop_robot(self, smooth=False):
+        """Stop the robot - can be instant or smooth deceleration"""
+        if smooth:
+            # Initiate smooth deceleration
+            self.is_decelerating = True
+            self.target_stop_speed = 0.0
+            rospy.loginfo("Initiating smooth deceleration...")
+        else:
+            # Instant stop
+            cmd = Twist()
+            cmd.linear.x = 0.0
+            cmd.angular.z = 0.0
+            self.cmd_vel_pub.publish(cmd)
+            self.current_linear_speed = 0.0
+            self.current_angular_speed = 0.0
+            self.is_decelerating = False
+    
+    def apply_deceleration(self):
+        """Apply smooth deceleration to current speeds"""
+        if not self.is_decelerating:
+            return False
+        
+        # Gradually reduce linear speed
+        if abs(self.current_linear_speed) > 0.01:
+            if self.current_linear_speed > 0:
+                self.current_linear_speed = max(0, self.current_linear_speed - self.deceleration_rate)
+            else:
+                self.current_linear_speed = min(0, self.current_linear_speed + self.deceleration_rate)
+        else:
+            self.current_linear_speed = 0.0
+        
+        # Gradually reduce angular speed
+        if abs(self.current_angular_speed) > 0.01:
+            self.current_angular_speed *= 0.7  # Reduce by 30% each cycle
+        else:
+            self.current_angular_speed = 0.0
+        
+        # Publish reduced speed
         cmd = Twist()
-        cmd.linear.x = 0.0
-        cmd.angular.z = 0.0
+        cmd.linear.x = self.current_linear_speed
+        cmd.angular.z = self.current_angular_speed
         self.cmd_vel_pub.publish(cmd)
-        self.current_linear_speed = 0.0
-        self.current_angular_speed = 0.0
+        
+        # Check if stopped
+        if abs(self.current_linear_speed) < 0.01 and abs(self.current_angular_speed) < 0.01:
+            self.is_decelerating = False
+            self.stop_robot(smooth=False)  # Final instant stop to ensure zero
+            rospy.loginfo("Deceleration complete - stopped")
+            return True
+        
+        return False
+    
+    def apply_acceleration(self, target_linear, target_angular):
+        """Apply smooth acceleration towards target speeds"""
+        if not self.is_accelerating:
+            # Not accelerating, use target speeds directly
+            return target_linear, target_angular
+        
+        # Gradually increase linear speed towards target
+        if abs(self.current_linear_speed - target_linear) > 0.01:
+            if self.current_linear_speed < target_linear:
+                self.current_linear_speed = min(target_linear, self.current_linear_speed + self.acceleration_rate)
+            else:
+                self.current_linear_speed = max(target_linear, self.current_linear_speed - self.acceleration_rate)
+        else:
+            self.current_linear_speed = target_linear
+        
+        # Gradually increase angular speed towards target
+        if abs(self.current_angular_speed - target_angular) > 0.01:
+            angular_diff = target_angular - self.current_angular_speed
+            self.current_angular_speed += angular_diff * 0.3  # 30% of difference
+        else:
+            self.current_angular_speed = target_angular
+        
+        # Check if acceleration complete
+        if abs(self.current_linear_speed - target_linear) < 0.01 and abs(self.current_angular_speed - target_angular) < 0.01:
+            self.is_accelerating = False
+            rospy.loginfo("Acceleration complete - at target speed")
+        
+        return self.current_linear_speed, self.current_angular_speed
+    
+    def reset_to_idle(self):
+        """Reset system to IDLE state - used for obstacle detection"""
+        rospy.logwarn("⚠ RESETTING TO IDLE MODE ⚠")
+        
+        # Stop robot smoothly
+        self.stop_robot(smooth=True)
+        
+        # Clear locked person
+        self.locked_person = None
+        self.lock_enabled = False
+        self.auto_lock = True
+        
+        # Reset following state
+        self.following_state = 'IDLE'
+        
+        # Clear gesture buffer
+        self.gesture_buffer.clear()
+        
+        rospy.loginfo("System reset complete - ready for new person")
     
     def draw_detections(self, image, detections, locked_person, keypoints=None, gesture='NONE'):
         """Draw bounding boxes, skeleton, and labels on the image"""
@@ -631,18 +737,37 @@ class PersonDetectionNode:
                 obstacle_detected = self.detect_obstacles()
                 
                 if obstacle_detected:
-                    # Stop if obstacle detected
-                    self.stop_robot()
-                    rospy.logwarn_throttle(1, "Obstacle detected - stopping")
+                    # OBSTACLE DETECTED - Pause (not reset)
+                    if not self.obstacle_paused:
+                        rospy.logwarn("⚠ OBSTACLE <50cm - PAUSING (person still locked) ⚠")
+                        self.obstacle_paused = True
+                    
+                    # Stop smoothly but keep person locked
+                    if not self.is_decelerating:
+                        self.stop_robot(smooth=True)
                 else:
+                    # No obstacle - resume or continue following
+                    if self.obstacle_paused:
+                        rospy.loginfo("✓ Obstacle cleared - RESUMING following")
+                        self.obstacle_paused = False
+                        self.is_accelerating = True  # Smooth resume
+                    
                     # Calculate control commands
-                    linear_speed = self.distance_controller(self.locked_person.get('distance'))
-                    angular_speed = self.centering_controller(self.locked_person['center'][0])
+                    target_linear = self.distance_controller(self.locked_person.get('distance'))
+                    target_angular = self.centering_controller(self.locked_person['center'][0])
+                    
+                    # Apply smooth acceleration if starting/resuming
+                    if self.is_accelerating:
+                        linear_speed, angular_speed = self.apply_acceleration(target_linear, target_angular)
+                    else:
+                        linear_speed = target_linear
+                        angular_speed = target_angular
                     
                     # Publish velocity command
                     cmd = Twist()
                     cmd.linear.x = linear_speed
                     cmd.angular.z = angular_speed
+                    
                     self.cmd_vel_pub.publish(cmd)
                     
                     self.current_linear_speed = linear_speed
@@ -652,9 +777,11 @@ class PersonDetectionNode:
                     rospy.loginfo_throttle(2, 
                         f"Following: linear={linear_speed:.2f} m/s, angular={angular_speed:.2f} rad/s, dist={self.locked_person.get('distance'):.2f}m")
             else:
-                # Not following - stop robot
-                if self.current_linear_speed != 0 or self.current_angular_speed != 0:
-                    self.stop_robot()
+                # Not following - apply deceleration if needed, otherwise stop
+                if self.is_decelerating:
+                    self.apply_deceleration()
+                elif self.current_linear_speed != 0 or self.current_angular_speed != 0:
+                    self.stop_robot(smooth=False)
             
             # Draw detections on original image
             annotated_image = self.draw_detections(
